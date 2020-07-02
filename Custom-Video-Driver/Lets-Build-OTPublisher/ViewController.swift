@@ -7,6 +7,7 @@
 //
 
 import UIKit
+import Accelerate
 import OpenTok
 
 let kWidgetRatio: CGFloat = 1.333
@@ -20,6 +21,8 @@ let kSessionId = ""
 // Replace with your generated token
 let kToken = ""
 
+var count: Int = 0
+var skipFrames: Int = 30
 
 class ViewController: UIViewController {
     lazy var session: OTSession = {
@@ -33,10 +36,18 @@ class ViewController: UIViewController {
     let captureSession = AVCaptureSession()
     
     let captureQueue = DispatchQueue(label: "com.tokbox.VideoCapture", attributes: [])
+
+    var infoYpCbCrToARGB = vImage_YpCbCrToARGB()
     
     override func viewDidLoad() {
         super.viewDidLoad()
         doConnect()
+
+
+        //configuring
+        var pixelRange = vImage_YpCbCrPixelRange(Yp_bias: 0, CbCr_bias: 128, YpRangeMax: 255, CbCrRangeMax: 255, YpMax: 255, YpMin: 1, CbCrMax: 255, CbCrMin: 0)
+        let error = vImageConvert_YpCbCrToARGB_GenerateConversion(kvImage_YpCbCrToARGBMatrix_ITU_R_601_4!, &pixelRange, &infoYpCbCrToARGB, kvImage420Yp8_Cb8_Cr8, kvImageARGB8888, vImage_Flags(kvImagePrintDiagnosticsToConsole))
+        print(error)
     }
     
     /**
@@ -66,13 +77,13 @@ class ViewController: UIViewController {
         
         publisher = OTPublisher(delegate: self, settings: settings)
         if let pub = publisher {
-            let videoRender = ExampleVideoRender()
-            pub.videoCapture = ExampleVideoCapture()
-            pub.videoRender = videoRender
+            //let videoRender = ExampleVideoRender()
+            //pub.videoCapture = ExampleVideoCapture()
+            //pub.videoRender = videoRender
             session.publish(pub, error: &error)
             
-            videoRender.frame = CGRect(x: 0, y: 0, width: view.frame.width, height: view.frame.width / kWidgetRatio)
-            view.addSubview(videoRender)
+            pub.view!.frame = CGRect(x: 0, y: 0, width: view.frame.width, height: view.frame.width / kWidgetRatio)
+            view.addSubview(pub.view!)
         }
     }
     
@@ -171,10 +182,15 @@ extension ViewController: OTPublisherDelegate {
 // MARK: - OTSubscriber delegate callbacks
 extension ViewController: OTSubscriberDelegate {
     func subscriberDidConnect(toStream subscriberKit: OTSubscriberKit) {
-        subscriber?.view?.frame = CGRect(x: 0, y: view.frame.width / kWidgetRatio, width: view.frame.width, height: view.frame.width / kWidgetRatio)
-        if let subsView = subscriber?.view {
-            view.addSubview(subsView)
-        }
+        let videoRender = ExampleVideoRender()
+        subscriber?.videoRender = videoRender
+
+        videoRender.frame = CGRect(x: 0, y: 0, width: view.frame.width, height: view.frame.height)
+        //if let subsView = subscriber?.view {
+            view.addSubview(videoRender)
+        //}
+
+        videoRender.delegate = self
     }
     
     func subscriber(_ subscriber: OTSubscriberKit, didFailWithError error: OTError) {
@@ -185,3 +201,114 @@ extension ViewController: OTSubscriberDelegate {
     }
 }
 
+extension ViewController: ExampleVideoRenderDelegate {
+    func renderer(_ renderer: ExampleVideoRender, didReceiveFrame videoFrame: OTVideoFrame) {
+        //face detection
+        if count % skipFrames == 0 {
+            let image = toUIImage(videoFrame)
+            let ciimage:CIImage! = CIImage(image: image)
+
+            let detector: CIDetector = CIDetector(ofType: CIDetectorTypeFace, context: nil, options:[CIDetectorAccuracy: CIDetectorAccuracyLow])!
+            let features: [CIFeature] = detector.features(in: ciimage)
+
+            if features.count > 0 {
+                //found
+                for feature in features {
+                    print(feature)
+                }
+            }
+        }
+        count += 1
+    }
+
+    //Convert YUV to ARGB
+    public func toUIImage(_ frame: OTVideoFrame) -> UIImage {
+        var result: UIImage? = nil
+        let width = frame.format?.imageWidth ?? 0
+        let height = frame.format?.imageHeight ?? 0
+        var pixelBuffer: CVPixelBuffer? = nil
+        _ = CVPixelBufferCreate(kCFAllocatorDefault, Int(width), Int(height), kCVPixelFormatType_32BGRA, nil, &pixelBuffer)
+
+
+
+        let start  = CFAbsoluteTimeGetCurrent()
+        if pixelBuffer == nil {
+            assert(false)
+        }
+
+        let subsampledWidth = frame.format!.imageWidth/2
+        let subsampledHeight = frame.format!.imageHeight/2
+
+        let planeSize = calculatePlaneSize(forFrame: frame)
+
+        print("ysize : \(planeSize.ySize) \(planeSize.uSize) \(planeSize.vSize)")
+        let yPlane = UnsafeMutablePointer<GLubyte>.allocate(capacity: planeSize.ySize)
+        let uPlane = UnsafeMutablePointer<GLubyte>.allocate(capacity: planeSize.uSize)
+        let vPlane = UnsafeMutablePointer<GLubyte>.allocate(capacity: planeSize.vSize)
+
+        memcpy(yPlane, frame.planes?.pointer(at: 0), planeSize.ySize)
+        memcpy(uPlane, frame.planes?.pointer(at: 1), planeSize.uSize)
+        memcpy(vPlane, frame.planes?.pointer(at: 2), planeSize.vSize)
+
+        let yStride = frame.format!.bytesPerRow.object(at: 0) as! Int
+        let uStride = frame.format!.bytesPerRow.object(at: 1) as! Int
+        let vStride = frame.format!.bytesPerRow.object(at: 2) as! Int
+
+        var yPlaneBuffer = vImage_Buffer(data: yPlane, height: vImagePixelCount(height), width: vImagePixelCount(width), rowBytes: yStride)
+
+        var uPlaneBuffer = vImage_Buffer(data: uPlane, height: vImagePixelCount(subsampledHeight), width: vImagePixelCount(subsampledWidth), rowBytes: uStride)
+
+
+        var vPlaneBuffer = vImage_Buffer(data: vPlane, height: vImagePixelCount(subsampledHeight), width: vImagePixelCount(subsampledWidth), rowBytes: vStride)
+        CVPixelBufferLockBaseAddress(pixelBuffer!, .readOnly)
+        let pixelBufferData = CVPixelBufferGetBaseAddress(pixelBuffer!)
+        let rowBytes = CVPixelBufferGetBytesPerRow(pixelBuffer!)
+        var destinationImageBuffer = vImage_Buffer()
+        destinationImageBuffer.data = pixelBufferData
+        destinationImageBuffer.height = vImagePixelCount(height)
+        destinationImageBuffer.width = vImagePixelCount(width)
+        destinationImageBuffer.rowBytes = rowBytes
+
+        var permuteMap: [UInt8] = [3, 2, 1, 0] //BGRA
+        let convertError = vImageConvert_420Yp8_Cb8_Cr8ToARGB8888(&yPlaneBuffer, &uPlaneBuffer, &vPlaneBuffer, &destinationImageBuffer, &infoYpCbCrToARGB, &permuteMap, 255, vImage_Flags(kvImagePrintDiagnosticsToConsole))
+
+        print(convertError, kvImageInvalidParameter)
+
+        CVPixelBufferUnlockBaseAddress(pixelBuffer!, [])
+
+
+        yPlane.deallocate()
+        uPlane.deallocate()
+        vPlane.deallocate()
+
+
+        var ciImage: CIImage? = nil
+        if let pixelBuffer = pixelBuffer {
+            ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        }
+
+        let temporaryContext = CIContext(options: nil)
+        var uiImage: CGImage? = nil
+        if let ciImage = ciImage {
+            uiImage = temporaryContext.createCGImage(ciImage, from: CGRect(x: 0, y: 0, width: CVPixelBufferGetWidth(pixelBuffer!), height: CVPixelBufferGetHeight(pixelBuffer!)))
+        }
+
+        if let uiImage = uiImage {
+            result = UIImage(cgImage: uiImage)
+        }
+        CVPixelBufferUnlockBaseAddress(pixelBuffer!, [])
+        return result!
+
+    }
+
+    fileprivate func calculatePlaneSize(forFrame frame: OTVideoFrame)
+        -> (ySize: Int, uSize: Int, vSize: Int)
+    {
+        guard let frameFormat = frame.format
+            else {
+                return (0, 0 ,0)
+        }
+        let baseSize = Int(frameFormat.imageWidth * frameFormat.imageHeight) * MemoryLayout<GLubyte>.size
+        return (baseSize, baseSize / 4, baseSize / 4)
+    }
+}
