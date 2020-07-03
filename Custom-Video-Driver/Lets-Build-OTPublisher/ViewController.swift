@@ -9,6 +9,7 @@
 import UIKit
 import Accelerate
 import OpenTok
+import ImageDetect
 
 let kWidgetRatio: CGFloat = 1.333
 
@@ -38,6 +39,8 @@ class ViewController: UIViewController {
     let captureQueue = DispatchQueue(label: "com.tokbox.VideoCapture", attributes: [])
 
     var infoYpCbCrToARGB = vImage_YpCbCrToARGB()
+
+    var imageView: UIImageView?
     
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -48,6 +51,10 @@ class ViewController: UIViewController {
         var pixelRange = vImage_YpCbCrPixelRange(Yp_bias: 0, CbCr_bias: 128, YpRangeMax: 255, CbCrRangeMax: 255, YpMax: 255, YpMin: 1, CbCrMax: 255, CbCrMin: 0)
         let error = vImageConvert_YpCbCrToARGB_GenerateConversion(kvImage_YpCbCrToARGBMatrix_ITU_R_601_4!, &pixelRange, &infoYpCbCrToARGB, kvImage420Yp8_Cb8_Cr8, kvImageARGB8888, vImage_Flags(kvImagePrintDiagnosticsToConsole))
         print(error)
+
+        imageView = UIImageView()
+        imageView?.frame = CGRect(x: 0, y: 0, width: 100, height: 100)
+        view.addSubview(imageView!)
     }
     
     /**
@@ -206,17 +213,40 @@ extension ViewController: ExampleVideoRenderDelegate {
         //face detection
         if count % skipFrames == 0 {
             let image = toUIImage(videoFrame)
-            let ciimage:CIImage! = CIImage(image: image)
 
+            image.detector.crop(type: .face) { [weak self] result in
+                switch result {
+                case .success(let croppedImages):
+                    // When the `Vision` successfully find type of object you set and successfuly crops it.
+                    DispatchQueue.main.async {
+                        guard let self = self else {
+                            return
+                        }
+
+                        self.imageView?.image = croppedImages[0]
+                        self.imageView?.superview?.bringSubviewToFront(self.imageView!)
+                    }
+                    print("Found")
+                case .notFound:
+                    // When the image doesn't contain any type of object you did set, `result` will be `.notFound`.
+                    print("Not Found")
+                case .failure(let error):
+                    // When the any error occured, `result` will be `failure`.
+                    print(error.localizedDescription)
+                }
+            }
+
+
+            /*let ciimage:CIImage! = CIImage(image: image)
             let detector: CIDetector = CIDetector(ofType: CIDetectorTypeFace, context: nil, options:[CIDetectorAccuracy: CIDetectorAccuracyLow])!
             let features: [CIFeature] = detector.features(in: ciimage)
 
             if features.count > 0 {
                 //found
                 for feature in features {
-                    print(feature)
+                    let f = feature as? CIFaceFeature
                 }
-            }
+            }*/
         }
         count += 1
     }

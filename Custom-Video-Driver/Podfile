@@ -1,8 +1,9 @@
-platform :ios, '9.0'
+platform :ios, '11.0'
 use_frameworks!
 
 require_relative '../OpenTokSDKVersion'
 
 target 'Custom-Video-Driver' do
   pod 'OpenTok', OpenTokSDKVersion
+  pod 'ImageDetect', '~> 1.1.4'
 end
